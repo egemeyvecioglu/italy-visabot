@@ -1,0 +1,14 @@
+antalya:
+  city_value: "City ID for Antalya"
+  office_value: "Office ID for Antalya"
+  getapplicationtype: "Application Type ID for Antalya"
+  telegram_token: "Your Telegram Bot Token"
+  telegram_chat_id: "Your Telegram Chat ID"
+ankara:
+  city_value: "City ID for Ankara"
+  office_value: "Office ID for Ankara"
+  getapplicationtype: "Application Type ID for Ankara"
+  telegram_token: "Your Telegram Bot Token"
+  telegram_chat_id: "Your Telegram Chat ID"
+
+# add more cities as needed
