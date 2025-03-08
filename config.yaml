@@ -10,7 +10,7 @@ ankara-general:
   city_value: "Ankara"
   office_value: "Ankara Ofis"
   getapplicationtype: "Diğer"
-  office_type: "STANDART"
+  office_type: "STANDART" # You can also provide just one office type as string
   telegram_token: "TELEGRAM_TOKEN_ANKARA_GENERAL"
   telegram_chat_id: "TELEGRAM_CHAT_ID"
 

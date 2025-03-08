@@ -1,20 +1,23 @@
 To run:
 
 ```
-python3 main.py -c <CITY_NAME> -p <PURPOSE>
+python3 main.py -config <YOUR_YAML_CONFIG_KEY>
 ```
 
+Please see the example [config.yaml](./config.yaml) file for the format of the config file.
 
-Example (Please write arguments in lowercase):
+
+Example:
 ```
-python3 main.py -c ankara -p general
+python3 main.py -config ankara-general
 ```
 
-Currently supported cities:
-- Antalya
-- Ankara
-- Istanbul
+You can define your own appointment options in the config.yaml by checking the example file. All you need to do is manually inspect the website once and get the options' text field you want to select.
 
-Currently supported purposes:
-- General (Choose this for touristic purposes)
-- Education
+Optional arguments:
+```
+--headless (bool) : If you want to run the script in headless mode (default: True)
+--interval (int) : Interval between checks in seconds (default: 600 seconds)
+--config_path (str) : Path to config file (default: config.yaml)
+```
+
