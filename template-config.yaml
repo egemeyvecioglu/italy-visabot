@@ -1,14 +1,20 @@
-antalya:
-  city_value: "City ID for Antalya"
-  office_value: "Office ID for Antalya"
-  getapplicationtype: "Application Type ID for Antalya"
-  telegram_token: "Your Telegram Bot Token"
-  telegram_chat_id: "Your Telegram Chat ID"
-ankara:
-  city_value: "City ID for Ankara"
-  office_value: "Office ID for Ankara"
-  getapplicationtype: "Application Type ID for Ankara"
-  telegram_token: "Your Telegram Bot Token"
-  telegram_chat_id: "Your Telegram Chat ID"
+antalya-general:
+  city_value: "Antalya"
+  office_value: "Antalya Ofis"
+  getapplicationtype: "Genel"
+  telegram_token: "TELEGRAM_TOKEN_ANTALYA_GENERAL"
+  telegram_chat_id: "TELEGRAM_CHAT_ID"
 
-# add more cities as needed
+ankara-general:
+  city_value: "Ankara"
+  office_value: "Ankara Ofis"
+  getapplicationtype: "Diğer"
+  telegram_token: "TELEGRAM_TOKEN_ANKARA_GENERAL"
+  telegram_chat_id: "TELEGRAM_CHAT_ID"
+
+ankara-education:
+  city_value: "Ankara"
+  office_value: "Ankara Ofis"
+  getapplicationtype: "Eğitim"
+  telegram_token: "TELEGRAM_TOKEN_ANKARA_EDUCATION"
+  telegram_chat_id: "TELEGRAM_CHAT_ID"
