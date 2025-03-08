@@ -39,7 +39,7 @@ SELECTORS = {
     "person_count_option": (
         "/html/body/div[2]/div/div/div/div[3]/div/form/div/div[1]/div[3]/div[5]/select/option[{count}]"
     ),
-    "result_text": "/html/body/div[2]/div/div/div/div[3]/div/form/div/div[1]/div[3]/div[7]/div",
+    "result_text": "#availableDayInfo",
     "city_select": "#city",
     "office_select": "#office",
     "application_type": "getapplicationtype",
@@ -47,16 +47,15 @@ SELECTORS = {
     "total_person": "#totalPerson",
 }
 
-# Form values
-FORM_VALUES = {"office_type": "STANDART"}
-
 
 class ConfigManager:
     """Manages configuration loading and access"""
 
-    def __init__(self, appointment_config, config_path=CONFIG_PATH):
+    def __init__(self, config_key, config_path=CONFIG_PATH):
         self.config_path = config_path
+        self.config_key = config_key
         self.config = self._load_config()
+        self.appointment_config = self._get_appointment_config()
 
     def _load_config(self):
         """Loads the YAML configuration file and returns its content."""
@@ -72,13 +71,12 @@ class ConfigManager:
             logging.error(f"YAML parsing error: {e}")
             raise
 
-    def get_city_config(self, city, purpose):
-        """Gets configuration for a specific city and purpose"""
-        config_key = f"{city}-{purpose}"
-        city_data = self.config.get(config_key)
-        if not city_data:
-            raise ValueError(f"Invalid city-purpose combination: {config_key}")
-        return city_data
+    def _get_appointment_config(self):
+        """Gets configuration for the specified config key"""
+        appointment_config = self.config.get(self.config_key)
+        if not appointment_config:
+            raise ValueError(f"Invalid configuration key: {self.config_key}")
+        return appointment_config
 
 
 class NotificationManager:
@@ -138,18 +136,17 @@ class CaptchaSolver:
 class AppointmentChecker:
     """Main class that checks for appointment availability"""
 
-    def __init__(self, city, purpose, headless=True):
-        self.city = city
-        self.purpose = purpose
+    def __init__(self, config_key, headless=True):
+        self.config_key = config_key
         self.headless = headless
-        self.config_manager = ConfigManager()
-        self.city_config = self.config_manager.get_city_config(city, purpose)
+        self.config_manager = ConfigManager(config_key)
+        self.appointment_config = self.config_manager.appointment_config
         self.captcha_solver = CaptchaSolver()
 
     @lru_cache(maxsize=10)
-    def _get_result_cache_key(self, person_count):
+    def _get_result_cache_key(self, person_count, office_type):
         """Create a cache key for results"""
-        return f"{self.city}-{self.purpose}-{person_count}"
+        return f"{self.config_key}-{office_type}-{person_count}"
 
     def navigate_to_homepage(self, sb):
         """Navigate to the homepage and handle Cloudflare"""
@@ -218,38 +215,44 @@ class AppointmentChecker:
             logging.error(f"Captcha solving error: {e}")
             return False
 
-    def fill_form(self, sb):
-        """Fill the appointment form with city data"""
+    def fill_form(self, sb, office_type=None):
+        """Fill the appointment form with city data and the specified office type"""
         try:
             # Select city
-            sb.cdp.select_option_by_text(SELECTORS["city_select"], self.city_config["city_value"])
+            sb.cdp.select_option_by_text(
+                SELECTORS["city_select"], self.appointment_config["city_value"]
+            )
             sb.sleep(1)
-            logging.info(f"{self.city.capitalize()} selected.")
+            logging.info(f"City selected as {self.appointment_config['city_value']}.")
 
             # Select office
             sb.cdp.select_option_by_text(
-                SELECTORS["office_select"], self.city_config["office_value"]
+                SELECTORS["office_select"], self.appointment_config["office_value"]
             )
             sb.sleep(1)
-            logging.info(f"iDATA office selected as {self.city_config['office_value']}.")
+            logging.info(f"iDATA office selected as {self.appointment_config['office_value']}.")
 
             # Select application type
             sb.cdp.select_option_by_text(
-                SELECTORS["application_type"], self.city_config["getapplicationtype"]
+                SELECTORS["application_type"], self.appointment_config["getapplicationtype"]
             )
             sb.sleep(1)
-            logging.info(f"Travel purpose selected as {self.city_config['getapplicationtype']}.")
+            logging.info(
+                f"Travel purpose selected as {self.appointment_config['getapplicationtype']}."
+            )
 
-            # Select office type
-            sb.cdp.select_option_by_text(SELECTORS["office_type"], FORM_VALUES["office_type"])
-            sb.sleep(1)
-            logging.info("Service type selected.")
+            # Select office type if provided
+            if office_type:
+                sb.cdp.select_option_by_text(SELECTORS["office_type"], office_type)
+                sb.sleep(1)
+                logging.info(f"Service type selected as {office_type}.")
+
             return True
         except Exception as e:
             logging.error(f"Error filling form: {e}")
             return False
 
-    def check_availability(self, sb):
+    def check_availability(self, sb, office_type):
         """Check appointment availability for different person counts"""
         results = []
 
@@ -261,44 +264,85 @@ class AppointmentChecker:
 
                 sb.cdp.select_option_by_text(SELECTORS["total_person"], text)
                 logging.info(f"Person count selected: {person_count}")
-                sb.sleep(2)  # Wait for results to load
+                sb.sleep(3)  # Wait for results to load
 
                 # Get result text
                 result_text = sb.cdp.get_text(SELECTORS["result_text"])
 
                 # Check for availability
                 if result_text and "Uygun randevu tarihi bulunmamaktadır" not in result_text:
-                    logging.info(f"Available appointment found for {person_count} people.")
+                    logging.info(
+                        f"Available appointment found for {person_count} people at {office_type} office."
+                    )
 
                     # Send notification
                     NotificationManager.send_telegram_message(
-                        self.city_config["telegram_token"],
-                        self.city_config["telegram_chat_id"],
-                        message=f"{person_count} kişi için uygun randevu:\n\n{result_text}\n\nRandevu almak için:\n {BASE_URL}",
+                        self.appointment_config["telegram_token"],
+                        self.appointment_config["telegram_chat_id"],
+                        message=f"{person_count} kişi için {office_type} ofisinde uygun randevu:\n\n{result_text}\n\nRandevu almak için:\n {BASE_URL}",
                     )
 
                     results.append(
-                        {"person_count": person_count, "available": True, "text": result_text}
+                        {
+                            "person_count": person_count,
+                            "office_type": office_type,
+                            "available": True,
+                            "text": result_text,
+                        }
                     )
                 else:
-                    logging.info(f"No available appointment for {person_count} people.")
+                    logging.info(
+                        f"No available appointment for {person_count} people at {office_type} office."
+                    )
                     results.append(
                         {
                             "person_count": person_count,
+                            "office_type": office_type,
                             "available": False,
                             "text": result_text if result_text else "No result text",
                         }
                     )
             except Exception as e:
-                logging.error(f"Error checking availability for {person_count} people: {e}")
-                results.append({"person_count": person_count, "available": False, "error": str(e)})
+                logging.error(
+                    f"Error checking availability for {person_count} people at {office_type} office: {e}"
+                )
+                results.append(
+                    {
+                        "person_count": person_count,
+                        "office_type": office_type,
+                        "available": False,
+                        "error": str(e),
+                    }
+                )
 
         return results
 
+    def get_office_types(self):
+        """Get list of office types from config"""
+        office_types = self.appointment_config.get("office_type")
+
+        # If no office_type in config, use default
+        if not office_types:
+            return ["STANDART"]
+
+        # If office_type is a string (single office provided), convert to list
+        if isinstance(office_types, str):
+            return [office_types]
+
+        # If it's already a list, return as is
+        return office_types
+
     def check_appointments(self):
         """Main method to check appointments"""
-        logging.info(f"Checking appointments for {self.city.capitalize()} - {self.purpose}")
-        logging.info(f"Telegram notification configured: {self.city_config['telegram_chat_id']}")
+        logging.info(f"Checking appointments for config: {self.config_key}")
+        logging.info(
+            f"Telegram notification configured: {self.appointment_config['telegram_chat_id']}"
+        )
+
+        office_types = self.get_office_types()
+        logging.info(f"Will check appointments for office types: {office_types}")
+
+        all_results = []
 
         try:
             with SB(uc=True, test=True, headless=self.headless) as sb:
@@ -309,14 +353,23 @@ class AppointmentChecker:
                 if not self.solve_captcha(sb):
                     return "Captcha solving failed"
 
-                # Fill form
+                # Fill the basic form without office type first
                 if not self.fill_form(sb):
-                    return "Form filling failed"
+                    return "Initial form filling failed"
 
-                # Check availability
-                results = self.check_availability(sb)
+                # Check for each office type
+                for office_type in office_types:
+                    logging.info(f"Checking appointments for office type: {office_type}")
 
-                return "Check completed successfully"
+                    # Select this office type
+                    sb.cdp.select_option_by_text(SELECTORS["office_type"], office_type)
+                    sb.sleep(1)
+
+                    # Check availability for this office type
+                    results = self.check_availability(sb, office_type)
+                    all_results.extend(results)
+
+                return f"Check completed successfully for {len(office_types)} office types"
         except Exception as e:
             logging.error(f"Appointment check failed: {e}")
             return f"Check failed: {str(e)}"
@@ -326,19 +379,11 @@ def main():
     """Main function to run the appointment checker"""
     parser = argparse.ArgumentParser(description="iData Appointment Checker")
     parser.add_argument(
-        "-c",
-        "--city",
-        choices=["antalya", "ankara"],
-        help="City name (antalya or ankara)",
-        default="ankara",
-    )
-    parser.add_argument(
-        "-p",
-        "--purpose",
+        "-config",
+        "--config_key",
         type=str,
-        choices=["general", "education"],
-        default="general",
-        help="Purpose of travel (only general and education are supported for now)",
+        required=True,
+        help="Configuration key to use (e.g., 'ankara-general')",
     )
     parser.add_argument(
         "--headless",
@@ -353,7 +398,7 @@ def main():
         help="Interval between checks in seconds (default: 600)",
     )
     parser.add_argument(
-        "--config",
+        "--config_path",
         type=str,
         default=CONFIG_PATH,
         help=f"Path to config file (default: {CONFIG_PATH})",
@@ -361,11 +406,11 @@ def main():
 
     args = parser.parse_args()
 
-    logging.info(f"Starting iData appointment checker for {args.city} - {args.purpose}")
+    logging.info(f"Starting iData appointment checker with config: {args.config_key}")
     logging.info("This script requires OCR for captcha solving.")
 
     # Create the appointment checker
-    checker = AppointmentChecker(args.city, args.purpose, args.headless)
+    checker = AppointmentChecker(args.config_key, args.headless)
 
     # Run the main loop
     retry_backoff = 1
@@ -380,13 +425,13 @@ def main():
             logging.info("Script terminated by user.")
             break
         except Exception as e:
-            # Implement exponential backoff (up to a maximum)
-            retry_wait = min(ERROR_RETRY_INTERVAL * retry_backoff, 1800)  # Max 30 minutes
+            # Implement exponential backoff (up to a minimum)
+            retry_wait = max(ERROR_RETRY_INTERVAL * retry_backoff, 120)  # min 2 minutes
             logging.error(f"Unexpected error: {e}")
             logging.error(f"Waiting {retry_wait} seconds before retry...")
             time.sleep(retry_wait)
             # Increase backoff for next failure
-            retry_backoff *= 2
+            retry_backoff *= 0.8
 
 
 if __name__ == "__main__":
