@@ -9,6 +9,8 @@ from seleniumbase import SB
 import base64
 import io
 from PIL import Image
+import gc
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -101,13 +103,29 @@ class NotificationManager:
 class CaptchaSolver:
     """Handles captcha recognition"""
 
+    _instance = None
+
+    @classmethod
+    def get_instance(cls):
+        """Singleton pattern to avoid creating multiple readers"""
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
     def __init__(self):
         # Initialize EasyOCR reader only once
-        self.reader = easyocr.Reader(["en"], gpu=False)
+        self.reader = None
+
+    def _lazy_init_reader(self):
+        """Initialize reader only when needed"""
+        if self.reader is None:
+            self.reader = easyocr.Reader(["en"], gpu=False)
 
     def extract_six_digit_code(self, image):
         """Extract a 6-digit code from an image using OCR"""
         try:
+            self._lazy_init_reader()
+
             # Read the image
             if isinstance(image, str):  # image is a file path
                 results = self.reader.readtext(image)
@@ -136,7 +154,7 @@ class AppointmentChecker:
         self.headless = headless
         self.config_manager = ConfigManager(config_key)
         self.appointment_config = self.config_manager.appointment_config
-        self.captcha_solver = CaptchaSolver()
+        self.captcha_solver = CaptchaSolver.get_instance()
 
     def navigate_to_homepage(self, sb):
         """Navigate to the homepage and handle Cloudflare"""
@@ -185,6 +203,9 @@ class AppointmentChecker:
 
             # Solve verification code
             captcha_code = self.captcha_solver.extract_six_digit_code(img)
+
+            # Make sure to close the image
+            img.close()
 
             if not captcha_code:
                 raise Exception("Could not extract a valid captcha code")
@@ -339,32 +360,39 @@ class AppointmentChecker:
 
         all_results = []
         with SB(uc=True, test=True, headless=self.headless) as sb:
-            # Navigate to homepage and handle Cloudflare
-            self.navigate_to_homepage(sb)
+            try:
+                # Navigate to homepage and handle Cloudflare
+                self.navigate_to_homepage(sb)
 
-            # Solve captcha
-            if not self.solve_captcha(sb):
-                return "Error solving captcha", "error"
+                # Solve captcha
+                if not self.solve_captcha(sb):
+                    return "Error solving captcha", "error"
 
-            logging.info("Going to appointment form page...")
+                logging.info("Going to appointment form page...")
 
-            # Fill the basic form without office type first
-            if not self.fill_form(sb):
-                return "Error filling form", "error"
+                # Fill the basic form without office type first
+                if not self.fill_form(sb):
+                    return "Error filling form", "error"
 
-            # Check for each office type
-            for office_type in office_types:
-                logging.info(f"Checking appointments for office type: {office_type}")
+                # Check for each office type
+                for office_type in office_types:
+                    logging.info(f"Checking appointments for office type: {office_type}")
 
-                # Select this office type
-                sb.cdp.select_option_by_text(SELECTORS["office_type"], office_type)
-                sb.sleep(1)
+                    # Select this office type
+                    sb.cdp.select_option_by_text(SELECTORS["office_type"], office_type)
+                    sb.sleep(1)
 
-                # Check availability for this office type
-                results = self.check_availability(sb, office_type)
-                all_results.extend(results)
+                    # Check availability for this office type
+                    results = self.check_availability(sb, office_type)
+                    all_results.extend(results)
 
-            return f"Check completed successfully for {len(office_types)} office types", "success"
+                return (
+                    f"Check completed successfully for {len(office_types)} office types",
+                    "success",
+                )
+            except Exception as e:
+                logging.error(f"Exception during appointment check: {e}")
+                return f"Error checking appointments: {e}", "error"
 
 
 def main():
@@ -401,12 +429,12 @@ def main():
     logging.info(f"Starting iData appointment checker with config: {args.config_key}")
     logging.info("This script requires OCR for captcha solving.")
 
-    # Create the appointment checker
-    checker = AppointmentChecker(args.config_key, args.headless)
-
     # Run the main loop
     retry_backoff = 1
     while True:
+        # Create a new checker instance for each iteration
+        checker = AppointmentChecker(args.config_key, args.headless)
+
         try:
             result, status = checker.check_appointments()
             if status == "success":
@@ -429,6 +457,10 @@ def main():
             logging.error(f"Error: {e}")
             logging.error(f"Waiting {ERROR_RETRY_INTERVAL} seconds before retry...")
             time.sleep(ERROR_RETRY_INTERVAL)
+
+        # Force garbage collection
+        del checker
+        gc.collect()
 
 
 if __name__ == "__main__":
