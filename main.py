@@ -6,14 +6,9 @@ import yaml
 import logging
 import requests
 from seleniumbase import SB
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
 import base64
 import io
 from PIL import Image
-from functools import lru_cache
-from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
@@ -143,11 +138,6 @@ class AppointmentChecker:
         self.appointment_config = self.config_manager.appointment_config
         self.captcha_solver = CaptchaSolver()
 
-    @lru_cache(maxsize=10)
-    def _get_result_cache_key(self, person_count, office_type):
-        """Create a cache key for results"""
-        return f"{self.config_key}-{office_type}-{person_count}"
-
     def navigate_to_homepage(self, sb):
         """Navigate to the homepage and handle Cloudflare"""
         logging.info(f"Navigating to {BASE_URL}...")
@@ -185,7 +175,7 @@ class AppointmentChecker:
                 sb.sleep(2)
 
         if not captcha_image:
-            raise Exception("Failed to get captcha image after multiple attempts")
+            return False
 
         # Decode base64 image
         try:
@@ -219,6 +209,7 @@ class AppointmentChecker:
         """Fill the appointment form with city data and the specified office type"""
         try:
             # Select city
+            sb.cdp.find_element(SELECTORS["city_select"], timeout=30)
             sb.cdp.select_option_by_text(
                 SELECTORS["city_select"], self.appointment_config["city_value"]
             )
@@ -226,6 +217,7 @@ class AppointmentChecker:
             logging.info(f"City selected as {self.appointment_config['city_value']}.")
 
             # Select office
+            sb.cdp.find_element(SELECTORS["office_select"], timeout=30)
             sb.cdp.select_option_by_text(
                 SELECTORS["office_select"], self.appointment_config["office_value"]
             )
@@ -233,6 +225,7 @@ class AppointmentChecker:
             logging.info(f"iDATA office selected as {self.appointment_config['office_value']}.")
 
             # Select application type
+            sb.cdp.find_element(SELECTORS["application_type"], timeout=30)
             sb.cdp.select_option_by_text(
                 SELECTORS["application_type"], self.appointment_config["getapplicationtype"]
             )
@@ -243,6 +236,7 @@ class AppointmentChecker:
 
             # Select office type if provided
             if office_type:
+                sb.cdp.find_element(SELECTORS["office_type"], timeout=30)
                 sb.cdp.select_option_by_text(SELECTORS["office_type"], office_type)
                 sb.sleep(1)
                 logging.info(f"Service type selected as {office_type}.")
@@ -262,6 +256,7 @@ class AppointmentChecker:
                 person_option_path = SELECTORS["person_count_option"].format(count=person_count + 1)
                 text = sb.cdp.get_text(person_option_path)
 
+                sb.cdp.find_element(SELECTORS["total_person"], timeout=30)
                 sb.cdp.select_option_by_text(SELECTORS["total_person"], text)
                 logging.info(f"Person count selected: {person_count}")
                 sb.sleep(3)  # Wait for results to load
@@ -279,7 +274,7 @@ class AppointmentChecker:
                     NotificationManager.send_telegram_message(
                         self.appointment_config["telegram_token"],
                         self.appointment_config["telegram_chat_id"],
-                        message=f"{person_count} kişi için {office_type} ofisinde uygun randevu:\n\n{result_text}\n\nRandevu almak için:\n {BASE_URL}",
+                        message=f"{person_count} kişi için {office_type} ofiste uygun randevu:\n\n{result_text}\n\nRandevu almak için:\n {BASE_URL}",
                     )
 
                     results.append(
@@ -343,36 +338,33 @@ class AppointmentChecker:
         logging.info(f"Will check appointments for office types: {office_types}")
 
         all_results = []
+        with SB(uc=True, test=True, headless=self.headless) as sb:
+            # Navigate to homepage and handle Cloudflare
+            self.navigate_to_homepage(sb)
 
-        try:
-            with SB(uc=True, test=True, headless=self.headless) as sb:
-                # Navigate to homepage and handle Cloudflare
-                self.navigate_to_homepage(sb)
+            # Solve captcha
+            if not self.solve_captcha(sb):
+                return "Error solving captcha", "error"
 
-                # Solve captcha
-                if not self.solve_captcha(sb):
-                    return "Captcha solving failed"
+            logging.info("Going to appointment form page...")
 
-                # Fill the basic form without office type first
-                if not self.fill_form(sb):
-                    return "Initial form filling failed"
+            # Fill the basic form without office type first
+            if not self.fill_form(sb):
+                return "Error filling form", "error"
 
-                # Check for each office type
-                for office_type in office_types:
-                    logging.info(f"Checking appointments for office type: {office_type}")
+            # Check for each office type
+            for office_type in office_types:
+                logging.info(f"Checking appointments for office type: {office_type}")
 
-                    # Select this office type
-                    sb.cdp.select_option_by_text(SELECTORS["office_type"], office_type)
-                    sb.sleep(1)
+                # Select this office type
+                sb.cdp.select_option_by_text(SELECTORS["office_type"], office_type)
+                sb.sleep(1)
 
-                    # Check availability for this office type
-                    results = self.check_availability(sb, office_type)
-                    all_results.extend(results)
+                # Check availability for this office type
+                results = self.check_availability(sb, office_type)
+                all_results.extend(results)
 
-                return f"Check completed successfully for {len(office_types)} office types"
-        except Exception as e:
-            logging.error(f"Appointment check failed: {e}")
-            return f"Check failed: {str(e)}"
+            return f"Check completed successfully for {len(office_types)} office types", "success"
 
 
 def main():
@@ -416,22 +408,27 @@ def main():
     retry_backoff = 1
     while True:
         try:
-            result = checker.check_appointments()
-            logging.info(f"{result}. Waiting {args.interval} seconds before next check...")
-            # Reset backoff on success
-            retry_backoff = 1
-            time.sleep(args.interval)
+            result, status = checker.check_appointments()
+            if status == "success":
+                logging.info(f"{result}. Waiting {args.interval} seconds before next check...")
+                # Reset backoff on success
+                retry_backoff = 1
+                time.sleep(args.interval)
+            else:
+                # Implement exponential backoff (up to a minimum)
+                retry_wait = max(ERROR_RETRY_INTERVAL * retry_backoff, 120)  # min 2 minutes
+                logging.error(f"Error: {result}")
+                logging.error(f"Waiting {retry_wait} seconds before retry...")
+                time.sleep(retry_wait)
+                # Increase backoff for next failure
+                retry_backoff *= 0.8
         except KeyboardInterrupt:
             logging.info("Script terminated by user.")
             break
         except Exception as e:
-            # Implement exponential backoff (up to a minimum)
-            retry_wait = max(ERROR_RETRY_INTERVAL * retry_backoff, 120)  # min 2 minutes
-            logging.error(f"Unexpected error: {e}")
-            logging.error(f"Waiting {retry_wait} seconds before retry...")
-            time.sleep(retry_wait)
-            # Increase backoff for next failure
-            retry_backoff *= 0.8
+            logging.error(f"Error: {e}")
+            logging.error(f"Waiting {ERROR_RETRY_INTERVAL} seconds before retry...")
+            time.sleep(ERROR_RETRY_INTERVAL)
 
 
 if __name__ == "__main__":
