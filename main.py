@@ -25,6 +25,7 @@ BASE_URL = "https://ita-schengen.idata.com.tr/tr"
 WAIT_TIME = 10  # Maximum wait time in seconds for elements
 RETRY_COUNT = 3
 CHECK_INTERVAL = 600  # 10 minutes between checks
+ACCELERATED_CHECK_INTERVAL = 120  # 2 minutes between checks when available date found
 ERROR_RETRY_INTERVAL = 300  # 5 minutes retry on error
 
 # XPath selectors
@@ -270,6 +271,7 @@ class AppointmentChecker:
     def check_availability(self, sb, office_type):
         """Check appointment availability for different person counts"""
         results = []
+        found_available = False
 
         for person_count in range(1, 5):
             try:
@@ -290,6 +292,9 @@ class AppointmentChecker:
                     logging.info(
                         f"Available appointment found for {person_count} people at {office_type} office."
                     )
+
+                    # Mark that we found an available slot
+                    found_available = True
 
                     # Send notification
                     NotificationManager.send_telegram_message(
@@ -331,7 +336,7 @@ class AppointmentChecker:
                     }
                 )
 
-        return results
+        return results, found_available
 
     def get_office_types(self):
         """Get list of office types from config"""
@@ -359,6 +364,8 @@ class AppointmentChecker:
         logging.info(f"Will check appointments for office types: {office_types}")
 
         all_results = []
+        found_available = False
+
         with SB(uc=True, test=True, headless=self.headless) as sb:
             try:
                 # Navigate to homepage and handle Cloudflare
@@ -366,13 +373,13 @@ class AppointmentChecker:
 
                 # Solve captcha
                 if not self.solve_captcha(sb):
-                    return "Error solving captcha", "error"
+                    return "Error solving captcha", "error", False
 
                 logging.info("Going to appointment form page...")
 
                 # Fill the basic form without office type first
                 if not self.fill_form(sb):
-                    return "Error filling form", "error"
+                    return "Error filling form", "error", False
 
                 # Check for each office type
                 for office_type in office_types:
@@ -383,16 +390,21 @@ class AppointmentChecker:
                     sb.sleep(1)
 
                     # Check availability for this office type
-                    results = self.check_availability(sb, office_type)
+                    results, available = self.check_availability(sb, office_type)
                     all_results.extend(results)
+
+                    # If we found an available slot in any office type, set the flag
+                    if available:
+                        found_available = True
 
                 return (
                     f"Check completed successfully for {len(office_types)} office types",
                     "success",
+                    found_available,
                 )
             except Exception as e:
                 logging.error(f"Exception during appointment check: {e}")
-                return f"Error checking appointments: {e}", "error"
+                return f"Error checking appointments: {e}", "error", False
 
 
 def main():
@@ -429,6 +441,9 @@ def main():
     logging.info(f"Starting iData appointment checker with config: {args.config_key}")
     logging.info("This script requires OCR for captcha solving.")
 
+    # Variable to track if we're in accelerated mode (checking every 2 minutes)
+    accelerated_mode = False
+
     # Run the main loop
     retry_backoff = 1
     while True:
@@ -436,12 +451,39 @@ def main():
         checker = AppointmentChecker(args.config_key, args.headless)
 
         try:
-            result, status = checker.check_appointments()
+            result, status, found_available = checker.check_appointments()
+
+            # Set the appropriate interval based on availability
+            if found_available:
+                # If we found an available appointment, switch to accelerated mode
+                if not accelerated_mode:
+                    accelerated_mode = True
+                    logging.info(
+                        "Available appointment found! Switching to accelerated mode (2-minute intervals)"
+                    )
+
+                check_interval = ACCELERATED_CHECK_INTERVAL
+            else:
+                # If no appointments found and we were in accelerated mode, switch back to normal
+                if accelerated_mode:
+                    accelerated_mode = False
+                    logging.info("No more available appointments. Switching back to normal mode")
+
+                check_interval = args.interval
+
             if status == "success":
-                logging.info(f"{result}. Waiting {args.interval} seconds before next check...")
+                if found_available:
+                    logging.info(
+                        f"{result}. Available appointments found! Waiting {check_interval} seconds before next check..."
+                    )
+                else:
+                    logging.info(
+                        f"{result}. No available appointments. Waiting {check_interval} seconds before next check..."
+                    )
+
                 # Reset backoff on success
                 retry_backoff = 1
-                time.sleep(args.interval)
+                time.sleep(check_interval)
             else:
                 # Implement exponential backoff (up to a minimum)
                 retry_wait = max(ERROR_RETRY_INTERVAL * retry_backoff, 120)  # min 2 minutes
