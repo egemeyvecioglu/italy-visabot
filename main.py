@@ -186,6 +186,7 @@ class AppointmentChecker:
             try:
                 captcha_image = sb.cdp.get_element_attribute(SELECTORS["captcha_img"], "src")
                 if captcha_image:
+                    logging.info("Captcha image found.")
                     break
             except Exception as e:
                 logging.warning(
@@ -353,7 +354,7 @@ class AppointmentChecker:
         # If it's already a list, return as is
         return office_types
 
-    def check_appointments(self):
+    def check_appointments(self, sb):
         """Main method to check appointments"""
         logging.info(f"Checking appointments for config: {self.config_key}")
         logging.info(
@@ -366,45 +367,44 @@ class AppointmentChecker:
         all_results = []
         found_available = False
 
-        with SB(uc=True, test=True, headless=self.headless) as sb:
-            try:
-                # Navigate to homepage and handle Cloudflare
-                self.navigate_to_homepage(sb)
+        try:
+            # Navigate to homepage and handle Cloudflare
+            self.navigate_to_homepage(sb)
 
-                # Solve captcha
-                if not self.solve_captcha(sb):
-                    return "Error solving captcha", "error", False
+            # Solve captcha
+            if not self.solve_captcha(sb):
+                return "Error solving captcha", "error", False
 
-                logging.info("Going to appointment form page...")
+            logging.info("Going to appointment form page...")
 
-                # Fill the basic form without office type first
-                if not self.fill_form(sb):
-                    return "Error filling form", "error", False
+            # Fill the basic form without office type first
+            if not self.fill_form(sb):
+                return "Error filling form", "error", False
 
-                # Check for each office type
-                for office_type in office_types:
-                    logging.info(f"Checking appointments for office type: {office_type}")
+            # Check for each office type
+            for office_type in office_types:
+                logging.info(f"Checking appointments for office type: {office_type}")
 
-                    # Select this office type
-                    sb.cdp.select_option_by_text(SELECTORS["office_type"], office_type)
-                    sb.sleep(1)
+                # Select this office type
+                sb.cdp.select_option_by_text(SELECTORS["office_type"], office_type)
+                sb.sleep(1)
 
-                    # Check availability for this office type
-                    results, available = self.check_availability(sb, office_type)
-                    all_results.extend(results)
+                # Check availability for this office type
+                results, available = self.check_availability(sb, office_type)
+                all_results.extend(results)
 
-                    # If we found an available slot in any office type, set the flag
-                    if available:
-                        found_available = True
+                # If we found an available slot in any office type, set the flag
+                if available:
+                    found_available = True
 
-                return (
-                    f"Check completed successfully for {len(office_types)} office types",
-                    "success",
-                    found_available,
-                )
-            except Exception as e:
-                logging.error(f"Exception during appointment check: {e}")
-                return f"Error checking appointments: {e}", "error", False
+            return (
+                f"Check completed successfully for {len(office_types)} office types",
+                "success",
+                found_available,
+            )
+        except Exception as e:
+            logging.error(f"Exception during appointment check: {e}")
+            return f"Error checking appointments: {e}", "error", False
 
 
 def main():
@@ -446,63 +446,67 @@ def main():
 
     # Run the main loop
     retry_backoff = 1
-    while True:
-        # Create a new checker instance for each iteration
-        checker = AppointmentChecker(args.config_key, args.headless)
+    # Create a single SB instance to reuse across iterations.
+    with SB(uc=True, test=True, headless=args.headless) as sb:
+        while True:
+            # Create a new checker instance for each iteration
+            checker = AppointmentChecker(args.config_key, args.headless)
 
-        try:
-            result, status, found_available = checker.check_appointments()
+            try:
+                result, status, found_available = checker.check_appointments(sb)
 
-            # Set the appropriate interval based on availability
-            if found_available:
-                # If we found an available appointment, switch to accelerated mode
-                if not accelerated_mode:
-                    accelerated_mode = True
-                    logging.info(
-                        "Available appointment found! Switching to accelerated mode (2-minute intervals)"
-                    )
-
-                check_interval = ACCELERATED_CHECK_INTERVAL
-            else:
-                # If no appointments found and we were in accelerated mode, switch back to normal
-                if accelerated_mode:
-                    accelerated_mode = False
-                    logging.info("No more available appointments. Switching back to normal mode")
-
-                check_interval = args.interval
-
-            if status == "success":
+                # Set the appropriate interval based on availability
                 if found_available:
-                    logging.info(
-                        f"{result}. Available appointments found! Waiting {check_interval} seconds before next check..."
-                    )
+                    # If we found an available appointment, switch to accelerated mode
+                    if not accelerated_mode:
+                        accelerated_mode = True
+                        logging.info(
+                            "Available appointment found! Switching to accelerated mode (2-minute intervals)"
+                        )
+
+                    check_interval = ACCELERATED_CHECK_INTERVAL
                 else:
-                    logging.info(
-                        f"{result}. No available appointments. Waiting {check_interval} seconds before next check..."
-                    )
+                    # If no appointments found and we were in accelerated mode, switch back to normal
+                    if accelerated_mode:
+                        accelerated_mode = False
+                        logging.info(
+                            "No more available appointments. Switching back to normal mode"
+                        )
 
-                # Reset backoff on success
-                retry_backoff = 1
-                time.sleep(check_interval)
-            else:
-                # Implement exponential backoff (up to a minimum)
-                retry_wait = max(ERROR_RETRY_INTERVAL * retry_backoff, 120)  # min 2 minutes
-                logging.error(f"Error: {result}")
-                logging.error(f"Waiting {retry_wait} seconds before retry...")
-                time.sleep(retry_wait)
-                # Increase backoff for next failure
-                retry_backoff *= 0.8
-        except KeyboardInterrupt:
-            logging.info("Script terminated by user.")
-            break
-        except Exception as e:
-            logging.error(f"Error: {e}")
-            logging.error(f"Waiting {ERROR_RETRY_INTERVAL} seconds before retry...")
-            time.sleep(ERROR_RETRY_INTERVAL)
+                    check_interval = args.interval
 
-        # Force garbage collection
-        del checker
-        gc.collect()
+                if status == "success":
+                    if found_available:
+                        logging.info(
+                            f"{result}. Available appointments found! Waiting {check_interval} seconds before next check..."
+                        )
+                    else:
+                        logging.info(
+                            f"{result}. No available appointments. Waiting {check_interval} seconds before next check..."
+                        )
+
+                    # Reset backoff on success
+                    retry_backoff = 1
+                    time.sleep(check_interval)
+                else:
+                    # Implement exponential backoff (up to a minimum)
+                    retry_wait = max(ERROR_RETRY_INTERVAL * retry_backoff, 120)  # min 2 minutes
+                    logging.error(f"Error: {result}")
+                    logging.error(f"Waiting {retry_wait} seconds before retry...")
+                    time.sleep(retry_wait)
+                    # Increase backoff for next failure
+                    retry_backoff *= 0.8
+            except KeyboardInterrupt:
+                logging.info("Script terminated by user.")
+                break
+            except Exception as e:
+                logging.error(f"Error: {e}")
+                logging.error(f"Waiting {ERROR_RETRY_INTERVAL} seconds before retry...")
+                time.sleep(ERROR_RETRY_INTERVAL)
+
+            # Force garbage collection
+            del checker
+            gc.collect()
 
 
 if __name__ == "__main__":
