@@ -16,7 +16,7 @@ You can define your own appointment options in the config.yaml by checking the e
 
 Optional arguments:
 ```
---headless (bool) : If you want to run the script in headless mode (default: True)
+--headless : Add if you want to run the script in headless mode.
 --interval (int) : Interval between checks in seconds (default: 600 seconds)
 --config_path (str) : Path to config file (default: config.yaml)
 ```

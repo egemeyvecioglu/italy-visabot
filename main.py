@@ -31,18 +31,18 @@ ERROR_RETRY_INTERVAL = 300  # 5 minutes retry on error
 # XPath selectors
 SELECTORS = {
     "cloudflare": "/html/body//div[1]/div/div[1]",
-    "captcha_img": "/html/body/div[2]/div[1]/div/div/div/form/div[3]/div[1]/img",
-    "captcha_input": "/html/body/div[2]/div[1]/div/div/div/form/div[3]/div[1]/div/div/input",
-    "submit_button": "/html/body/div[2]/div[1]/div/div/div/form/div[3]/div[2]/a",
+    "captcha_img": "/html/body/div[3]/div[1]/div/div/div/form/div[3]/div[1]/img",
+    "captcha_input": "#mailConfirmCodeControl",
+    "submit_button": "#confirmationbtn",
     "person_count_option": (
-        "/html/body/div[2]/div/div/div/div[3]/div/form/div/div[1]/div[3]/div[5]/select/option[{count}]"
+        "/html/body/div[3]/div/div/div/div[3]/div/form/div/div[1]/div[3]/div[5]/select/option[{count}]"
     ),
     "result_text": "#availableDayInfo",
     "city_select": "#city",
     "office_select": "#office",
     "application_type": "getapplicationtype",
     "office_type": "#officetype",
-    "total_person": "#totalPerson",
+    "total_person": "/html/body/div[3]/div/div/div/div[3]/div/form/div/div[1]/div[3]/div[5]/select",
 }
 
 
@@ -175,12 +175,13 @@ class AppointmentChecker:
             logging.warning(f"Cloudflare handling: {e}. Continuing...")
 
         # Wait for page to stabilize
-        sb.sleep(2)
+        sb.sleep(5)
 
     def solve_captcha(self, sb):
         """Solve the captcha and submit the form"""
         captcha_image = None
 
+        sb.cdp.find_element(SELECTORS["captcha_img"], timeout=120)
         # Try to get the captcha image with retries
         for try_count in range(RETRY_COUNT):
             try:
@@ -192,7 +193,7 @@ class AppointmentChecker:
                 logging.warning(
                     f"{try_count + 1}/{RETRY_COUNT} - Failed to get captcha image: {e}. Retrying..."
                 )
-                sb.sleep(2)
+                sb.sleep(3)
 
         if not captcha_image:
             return False
@@ -279,17 +280,23 @@ class AppointmentChecker:
                 # Select person count option
                 person_option_path = SELECTORS["person_count_option"].format(count=person_count + 1)
                 text = sb.cdp.get_text(person_option_path)
+                logging.info(f"Selecting person count: {text}")
 
                 sb.cdp.find_element(SELECTORS["total_person"], timeout=30)
                 sb.cdp.select_option_by_text(SELECTORS["total_person"], text)
                 logging.info(f"Person count selected: {person_count}")
-                sb.sleep(3)  # Wait for results to load
+                sb.sleep(7)  # Wait for results to load
 
                 # Get result text
                 result_text = sb.cdp.get_text(SELECTORS["result_text"])
+                logging.info(f"Result text: {result_text}")
 
                 # Check for availability
-                if result_text and "Uygun randevu tarihi bulunmamaktadır" not in result_text:
+                if (
+                    result_text
+                    and ("Uygun randevu tarihi bulunmamaktadır" not in result_text)
+                    and ("Sistem hatası" not in result_text)
+                ):
                     logging.info(
                         f"Available appointment found for {person_count} people at {office_type} office."
                     )
@@ -419,8 +426,7 @@ def main():
     )
     parser.add_argument(
         "--headless",
-        type=bool,
-        default=True,
+        action="store_true",
         help="Run the script in headless mode",
     )
     parser.add_argument(
